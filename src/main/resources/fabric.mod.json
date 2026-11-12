@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "neko_voidwarehouse_search",
+  "version": "${version}",
+  "name": "Neko VoidWarehouse Search",
+  "description": "虚空仓库搜索框：在服务端虚空仓库界面上叠加一个搜索框，支持中文 / 拼音 / 注册名搜索筛选物品。纯客户端模组，服务端需搭配 carpet-Neko-Addition 1.0.16+。 Fabric 1.20.1 移植与维护：OvOSSK；原作者：Akirono。",
+  "authors": [
+    "Akirono"
+  ],
+  "license": "MIT",
+  "icon": "assets/neko_voidwarehouse_search/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "neko.voidwarehouse.search.VoidWarehouseSearchClient"
+    ]
+  },
+  "mixins": [
+    "neko_voidwarehouse_search.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.14",
+    "minecraft": "1.20.1",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "carpet_neko_addition": "*"
+  },
+  "contributors": [
+    "OvOSSK (Minecraft 1.20.1 Fabric port and maintenance)"
+  ],
+  "contact": {
+    "sources": "https://github.com/OvOSSK/neko-voidwarehouse-search/tree/fabric-1.20.1"
+  }
+}

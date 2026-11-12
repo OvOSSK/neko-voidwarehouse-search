@@ -1,0 +1,18 @@
+Minecraft 1.20.1 Fabric port attribution
+
+Original project: neko-voidwarehouse-search
+Original source: https://github.com/YoshinoShizuka/neko-voidwarehouse-search
+Original author and copyright holder: Akirono
+Original copyright notice: Copyright (c) 2026 Akirono
+License: MIT (see the accompanying LICENSE file)
+
+Minecraft 1.20.1 Fabric port and maintenance: OvOSSK
+Port source: https://github.com/OvOSSK/neko-voidwarehouse-search/tree/fabric-1.20.1
+
+The OvOSSK attribution applies to the porting and maintenance contribution.
+It does not replace the original author or claim ownership of the upstream
+code, name, artwork, or other upstream assets. The original copyright and
+MIT license notices are retained. The port is not an official upstream release.
+Port modifications are distributed under the MIT license as well.
+Third-party dependencies retain their respective licenses and attribution.
+
