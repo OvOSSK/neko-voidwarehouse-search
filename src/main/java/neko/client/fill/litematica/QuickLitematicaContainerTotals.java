@@ -1,0 +1,257 @@
+package neko.client.fill.litematica;
+
+import fi.dy.masa.litematica.materials.MaterialListBase;
+import fi.dy.masa.litematica.schematic.LitematicaSchematic;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.ItemStack;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * 整张原理图里<b>所有容器内填充物</b>的合计。
+ *
+ * <h2>为什么是「容器内填充物」而不是「方块统计」</h2>
+ * <p>Litematica 自己的材料列表数的是<b>方块</b>：这座建筑用了 320 个箱子。那回答不了
+ * 「这些箱子里该装什么」。真正决定要往仓库要什么货的，是每个容器方块 NBT 里
+ * {@code Items} 写明的「第几格放什么、放几个」。本类只读后者。</p>
+ *
+ * <h2>数据从哪来</h2>
+ * <p>不扫描世界、不读区块，直接读<b>已放置投影</b>的方块实体表：
+ * {@code SchematicPlacement#getSchematic()} → 每个 region 的
+ * {@code getBlockEntityMapForRegion}。所以投影没加载、没启用时这里是空的 ——
+ * 那正是「没有可比对的东西」，不是错误。</p>
+ *
+ * <h2>扫哪几个投影</h2>
+ * <p>由入口决定，见 {@link ContainerScope}：从材料列表点按钮 ⇒ 只扫<b>那一张</b>；
+ * 拿不到对应关系（热键从世界里直接打开）⇒ 扫全部启用的投影。</p>
+ *
+ * <h2>不做什么</h2>
+ * <ul>
+ *   <li>不把潜影盒里的东西算成需求：盒子里装的是「盒子」这一件物品，
+ *       展开会让「要 1 个装满石头的盒子」变成「要 27 组石头」，与填充行为不符。</li>
+ *   <li>不做双箱配对：原版双箱只有一个方块实体持有 {@code Items}，另一半没有，
+ *       逐条累加天然不会重复。</li>
+ *   <li>不读实体容器（驴/羊驼身上的箱子）：那是实体不是方块，投影里也没有可靠的
+ *       物品快照，先不算。</li>
+ * </ul>
+ */
+public final class QuickLitematicaContainerTotals {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger("neko-client");
+
+    /**
+     * 单次扫描最多处理多少个方块实体。
+     *
+     * <p>扫描发生在客户端线程（按下热键那一刻），几万个容器会明显卡顿。真到那个量级，
+     * 先出一份「截断」的结果比让玩家以为游戏死了更好。</p>
+     */
+    private static final int MAX_BLOCK_ENTITIES = 40_000;
+
+    /** 一种物品的合计需求：代表栈只用来取图标/名字，数量另算。 */
+    public record Row(ItemStack stack, int count) {
+    }
+
+    /**
+     * 一次扫描的结果。
+     *
+     * @param rows        按数量从多到少排好的合计表
+     * @param names       参与合计的投影名字（按放置顺序），给标题用
+     * @param placements  参与合计的原理图张数（一张图算 1，与它被放置几次无关）
+     * @param containers  真正带物品的容器个数
+     * @param unreadable  有 {@code Items} 但整条读不出来的容器个数
+     * @param truncated   是否撞上 {@link #MAX_BLOCK_ENTITIES} 提前收工
+     */
+    public record Scan(List<Row> rows, List<String> names, int placements, int containers,
+                       int unreadable, boolean truncated) {
+        public static final Scan EMPTY = new Scan(List.of(), List.of(), 0, 0, 0, false);
+
+        public boolean isEmpty() {
+            return this.rows.isEmpty();
+        }
+
+        public int totalItems() {
+            int total = 0;
+            for (Row row : this.rows) {
+                total += row.count();
+            }
+            return total;
+        }
+    }
+
+    private QuickLitematicaContainerTotals() {
+    }
+
+    /**
+     * 算「当前正在看的那张原理图」。
+     *
+     * <p>🔴 不能扫全部启用投影 —— 那会让所有入口都打开同一份表（真机踩过两次：
+     * 在蜂箱农场的材料列表里点「容器材料」，弹出的是另一张刷沙机的表；
+     * 从「加载原理图」进去也一样）。范围由 {@link ContainerScope} 从材料列表本身反推，
+     * 拿不到才退回全部启用。</p>
+     *
+     * @param source 打开界面前玩家正在看的那份材料列表，可为 {@code null}
+     */
+    public static Scan scanFor(MaterialListBase source) {
+        return scanScope(ContainerScope.resolve(source));
+    }
+
+    /**
+     * 算给定的一批图（范围已由调用方决定）。
+     *
+     * <p>单元是<b>一张原理图</b>而不是一个投影：从「加载原理图」进来的图可能压根没放置，
+     * 但它一样有容器 NBT 可读。</p>
+     */
+    public static Scan scanScope(List<ContainerScope.Target> targets) {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.level == null || targets == null || targets.isEmpty()) {
+            return Scan.EMPTY;
+        }
+        long startedAt = System.nanoTime();
+        Scan scan = scan(targets, client.level.registryAccess());
+        LOGGER.info("[容器填充物] 合计 {} 种 / {} 件（原理图 {} 张：{}，容器 {} 个{}），{} ms",
+                scan.rows().size(), scan.totalItems(), scan.placements(),
+                String.join(" / ", scan.names()), scan.containers(),
+                scan.truncated() ? "，已截断" : "", (System.nanoTime() - startedAt) / 1_000_000L);
+        return scan;
+    }
+
+    /** 只算给定的图（{@link #scanScope} 的实际执行者；范围已由调用方定好）。 */
+    static Scan scan(List<ContainerScope.Target> targets, HolderLookup.Provider lookup) {
+        if (targets == null || targets.isEmpty() || lookup == null) {
+            return Scan.EMPTY;
+        }
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        Map<String, ItemStack> samples = new LinkedHashMap<>();
+        int containers = 0;
+        int unreadable = 0;
+        int visited = 0;
+        boolean truncated = false;
+
+        outer:
+        for (ContainerScope.Target target : targets) {
+            LitematicaSchematic schematic = target == null ? null : target.schematic();
+            if (schematic == null) {
+                continue;
+            }
+            Set<String> regions = schematic.getAreas() == null
+                    ? Set.of() : schematic.getAreas().keySet();
+            for (String region : regions) {
+                Map<BlockPos, CompoundTag> blockEntities =
+                        QuickLitematicaContainerMaterialsAccess.getBlockEntities(schematic, region);
+                if (blockEntities == null) {
+                    continue;
+                }
+                for (CompoundTag nbt : blockEntities.values()) {
+                    if (visited++ >= MAX_BLOCK_ENTITIES) {
+                        truncated = true;
+                        break outer;
+                    }
+                    List<ItemStack> stacks =
+                            QuickLitematicaContainerMaterials.readItemsForStatistics(nbt, lookup);
+                    if (stacks == null) {
+                        unreadable++;
+                        continue;
+                    }
+                    boolean any = false;
+                    for (ItemStack stack : stacks) {
+                        String id = idOf(stack);
+                        if (id == null) {
+                            continue;
+                        }
+                        any = true;
+                        addCount(counts, id, stack.getCount());
+                        samples.putIfAbsent(id, oneOf(stack));
+                    }
+                    if (any) {
+                        containers++;
+                    }
+                }
+            }
+        }
+
+        return new Scan(toRows(counts, samples), namesOf(targets), targets.size(),
+                containers, unreadable, truncated);
+    }
+
+    /**
+     * 纯逻辑：图 → 名字列表（标题要用）。
+     *
+     * <p>名字在 {@link ContainerScope} 里就定好了：投影来的用 {@code SchematicPlacement#getName()}
+     * （玩家在投影列表里看到的就是它），「加载原理图」来的用元数据名（与那个列表一致）。</p>
+     */
+    static List<String> namesOf(List<ContainerScope.Target> targets) {
+        List<String> names = new ArrayList<>();
+        if (targets == null) {
+            return names;
+        }
+        for (ContainerScope.Target target : targets) {
+            if (target == null) {
+                continue;
+            }
+            String name = target.name();
+            names.add(name == null ? "" : name);
+        }
+        return names;
+    }
+
+    /**
+     * 纯逻辑：把一批 id/数量并进合计表（同 id 累加）。
+     *
+     * <p>单独拆出来是为了能在 JUnit 里直接跑 —— 扫描那部分要 Litematica 和注册表，
+     * 测不了；「同一个 id 在多格出现要不要相加」这种判据必须测。</p>
+     */
+    static void addCount(Map<String, Integer> counts, String id, int count) {
+        if (counts == null || id == null || id.isEmpty() || count <= 0) {
+            return;
+        }
+        counts.merge(id, count, Integer::sum);
+    }
+
+    /** 合计表 → 按数量从多到少（同数量按 id）排好的行；数量为 0 的不出行。 */
+    static List<Row> toRows(Map<String, Integer> counts, Map<String, ItemStack> samples) {
+        List<Row> rows = new ArrayList<>();
+        if (counts == null || samples == null) {
+            return rows;
+        }
+        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+            int count = entry.getValue() == null ? 0 : entry.getValue();
+            ItemStack sample = samples.get(entry.getKey());
+            if (count <= 0 || sample == null || sample.isEmpty()) {
+                continue;
+            }
+            rows.add(new Row(sample, count));
+        }
+        rows.sort((left, right) -> {
+            int byCount = Integer.compare(right.count(), left.count());
+            return byCount != 0 ? byCount : left.stack().getItem().toString()
+                    .compareTo(right.stack().getItem().toString());
+        });
+        return rows;
+    }
+
+    /** 物品 id（{@code namespace:path}）；空气/空栈返回 null。 */
+    static String idOf(ItemStack stack) {
+        if (stack == null || stack.isEmpty() || stack.getItem() == net.minecraft.world.item.Items.AIR) {
+            return null;
+        }
+        ResourceLocation key = BuiltInRegistries.ITEM.getKey(stack.getItem());
+        return key == null ? null : key.toString();
+    }
+
+    private static ItemStack oneOf(ItemStack stack) {
+        ItemStack copy = stack.copy();
+        copy.setCount(1);
+        return copy;
+    }
+}

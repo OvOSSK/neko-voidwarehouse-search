@@ -1,0 +1,1 @@
+package neko.compat; public interface PlayerLanguage { String neko$getLanguage(); }

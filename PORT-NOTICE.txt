@@ -16,3 +16,9 @@ MIT license notices are retained. The port is not an official upstream release.
 Port modifications are distributed under the MIT license as well.
 Third-party dependencies retain their respective licenses and attribution.
 
+
+2026-11-22 update by OvOSSK:
+Upstream snapshot: 80c7a6d6c39bde9837ff538e8b44c86250d7d8c2
+Minecraft 1.20.1 networking, NBT, recipe confirmation and UI adaptation.
+Quickcraft-derived source retains Copyright (c) 2026 yiyihehe.
+Its MIT license is included at src/main/resources/licenses/quickcraft-MIT.txt.

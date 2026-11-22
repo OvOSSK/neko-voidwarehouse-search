@@ -1,4 +1,5 @@
 package neko.voidwarehouse.search;
+import neko.client.SearchIndex;
 
 import org.junit.jupiter.api.Test;
 
